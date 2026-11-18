@@ -6,10 +6,13 @@ import os
 import re
 import subprocess
 import sys
-from datetime import timedelta
+from datetime import timedelta, datetime
 from enum import Enum
 from pathlib import Path
 from typing import TypedDict
+import tempfile
+import matplotlib.pyplot as plt
+from fpdf import FPDF, Align
 
 import click
 import requests_cache
@@ -54,6 +57,12 @@ class ScrapeError(Exception):
         super().__init__()
 
 
+def remove_stale(path: Path) -> None:
+    for item in path.iterdir():
+        if item.is_file():
+            item.unlink()
+
+
 def scrape_puzzle(
     session: requests_cache.CachedSession, refresh_cache: bool
 ) -> ScrapeData:
@@ -66,8 +75,55 @@ def scrape_puzzle(
     raise ScrapeError
 
 
+def generate_board_from_puzzle_data(puzzle_data: list) -> list:
+    puzzle_data_none = [None if x == 0 else x for x in puzzle_data]
+    board = []
+    for i in range(0, len(puzzle_data_none), 9):
+        board.append(puzzle_data_none[i : i + 9])
+    return board
+
+
+def generate_puzzle_image(puzzle: Puzzle, out_path: str, solution: bool = False):
+    if solution:
+        board = generate_board_from_puzzle_data(puzzle["puzzle_data"]["solution"])
+    else:
+        board = generate_board_from_puzzle_data(puzzle["puzzle_data"]["puzzle"])
+    _, ax = plt.subplots(figsize=(6, 6))
+    plt.title(
+        f"{datetime.strptime(puzzle['print_date'], '%Y-%m-%d').strftime('%A, %B %d, %Y')}  --  {puzzle['difficulty']}"
+    )
+    ax.set_xlim(0, 9)
+    ax.set_ylim(0, 9)
+    ax.invert_yaxis()  # Flip y-axis so (0,0) is at the top-left
+
+    # Draw grid lines
+    for i in range(10):
+        lw = 2.5 if i % 3 == 0 else 0.8
+        ax.axhline(i, color="black", linewidth=lw)
+        ax.axvline(i, color="black", linewidth=lw)
+
+    # Fill in numbers
+    for r in range(9):
+        for c in range(9):
+            val = board[r][c]
+            if val is not None:
+                ax.text(
+                    c + 0.5,
+                    r + 0.5,
+                    str(val),
+                    fontsize=18,
+                    ha="center",
+                    va="center",
+                    fontweight="bold",
+                )
+
+    ax.axis("off")
+    plt.savefig(out_path, bbox_inches="tight", dpi=300)
+    plt.close()
+
+
 def format_pdf(
-    puzzle_data: ScrapeData,
+    scrape_data: ScrapeData,
     large_print: bool,
     left_handed: bool,
     solution: bool,
@@ -78,21 +134,34 @@ def format_pdf(
     # URL query string parameters. These do not apply to the solution PDF.
 
     if difficulty is Difficulty.ALL:
-        puzzles = (puzzle_data["hard"], puzzle_data["medium"], puzzle_data["easy"])
+        puzzles = (scrape_data["hard"], scrape_data["medium"], scrape_data["easy"])
     else:
-        puzzles = (puzzle_data[difficulty.value],)
+        puzzles = (scrape_data[difficulty.value],)
 
+    remove_stale(Path("./output"))
     for puz_data in puzzles:
-        puz = puz_data["puzzle_data"]["puzzle"]
-        sdk_output = ""
-        for i in range(len(puz)):
-            if i % 9 == 0:
-                sdk_output += "\n"
-            if puz[i] == 0:
-                sdk_output += "."
-            else:
-                sdk_output += str(puz[i])
-        print(sdk_output)
+        generate_puzzle_image(puz_data, f"output/{puz_data['difficulty']}.png")
+        # puz = puz_data["puzzle_data"]["puzzle"]
+        # sdk_output = ""
+        # for i in range(len(puz)):
+        #     if i % 9 == 0:
+        #         sdk_output += "\n"
+        #     if puz[i] == 0:
+        #         sdk_output += "."
+        #     else:
+        #         sdk_output += str(puz[i])
+        # print(sdk_output)
+    pdf = FPDF()
+    pdf.add_page()
+    if len(puzzles) > 1:
+        pdf.image("output/Easy.png", w=pdf.epw / 2, y=10, keep_aspect_ratio=True)
+        pdf.image(
+            "output/Medium.png", w=pdf.epw / 2, x=Align.R, y=60, keep_aspect_ratio=True
+        )
+        pdf.image(
+            "output/Hard.png", w=pdf.epw / 2, x=Align.L, y=120, keep_aspect_ratio=True
+        )
+    pdf.output("output/sudoku.pdf")
 
 
 def write_pdf(data: bytes, path: os.PathLike) -> None:
@@ -223,8 +292,8 @@ def main(
     try:
         data = scrape_puzzle(session, refresh)
         files = format_pdf(data, large_print, left_handed, solution, difficulty)
-    except Exception:
-        print("Some sort of error", sys.stdout)
+    except Exception as e:
+        print(f"Some sort of error: {e}", sys.stdout)
     return
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
