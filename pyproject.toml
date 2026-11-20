@@ -1,0 +1,22 @@
+[project]
+name = "nyt-sudoku-download"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Klint Youngmeyer", email = "southqaw@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "click>=8.5.1",
+    "fpdf2>=2.9.0",
+    "matplotlib>=3.11.2",
+    "requests-cache>=1.3.3",
+]
+
+[project.scripts]
+nyt-sudoku-download = "nyt_sudoku_download:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"

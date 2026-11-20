@@ -6,16 +6,17 @@ import os
 import re
 import subprocess
 import sys
-from datetime import timedelta, datetime
+from datetime import timedelta
+import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TypedDict
-import tempfile
-import matplotlib.pyplot as plt
-from fpdf import FPDF, Align
+from typing import TypedDict, Optional, Literal
 
 import click
+import matplotlib.pyplot as plt
 import requests_cache
+from fpdf import FPDF, Align
+from fpdf.enums import DocumentCompliance, PageOrientation
 
 PUZZLE_URL = "https://www.nytimes.com/puzzles/sudoku/hard"
 
@@ -57,10 +58,38 @@ class ScrapeError(Exception):
         super().__init__()
 
 
-def remove_stale(path: Path) -> None:
-    for item in path.iterdir():
-        if item.is_file():
-            item.unlink()
+class SudokuPDF(FPDF):
+    def __init__(
+        self,
+        orientation: str | PageOrientation = PageOrientation.PORTRAIT,
+        unit: str | float = "mm",
+        format: str | tuple[float, float] = "A4",
+        font_cache_dir: Literal["DEPRECATED"] = "DEPRECATED",
+        *,
+        enforce_compliance: Optional[str | DocumentCompliance] = None,
+        puzzle_date: Optional[str | None] = None,
+    ) -> None:
+        self.puzzle_date = puzzle_date
+        super().__init__(
+            orientation,
+            unit,
+            format,
+            font_cache_dir,
+            enforce_compliance=enforce_compliance,
+        )
+
+    def header(self) -> None:
+        self.set_font("helvetica", size=11)
+        self.cell(
+            self.epw / 3,
+            20,
+            f"{datetime.datetime.strptime(self.puzzle_date, '%Y-%m-%d').strftime('%A, %B %d, %Y')}",
+            align="L",
+        )
+        self.set_font("Times", style="B", size=32)
+        self.cell(self.epw / 3, 15, "NYT Sudoku", align="C")
+        self.line(x1=self.l_margin, y1=25, x2=self.w - self.r_margin, y2=25)
+        self.ln(15)
 
 
 def scrape_puzzle(
@@ -89,8 +118,12 @@ def generate_puzzle_image(puzzle: Puzzle, out_path: str, solution: bool = False)
     else:
         board = generate_board_from_puzzle_data(puzzle["puzzle_data"]["puzzle"])
     _, ax = plt.subplots(figsize=(6, 6))
+    #  f"{datetime.strptime(puzzle['print_date'], '%Y-%m-%d').strftime('%A, %B %d, %Y')}  --  {puzzle['difficulty']} --"
     plt.title(
-        f"{datetime.strptime(puzzle['print_date'], '%Y-%m-%d').strftime('%A, %B %d, %Y')}  --  {puzzle['difficulty']}"
+        f"--  {puzzle['difficulty']} Puzzle --",
+        fontsize=18,
+        fontname="Noto Serif",
+        y=-0.08,
     )
     ax.set_xlim(0, 9)
     ax.set_ylim(0, 9)
@@ -138,30 +171,29 @@ def format_pdf(
     else:
         puzzles = (scrape_data[difficulty.value],)
 
-    remove_stale(Path("./output"))
+    Path("./out").mkdir(parents=True, exist_ok=True)
     for puz_data in puzzles:
-        generate_puzzle_image(puz_data, f"output/{puz_data['difficulty']}.png")
-        # puz = puz_data["puzzle_data"]["puzzle"]
-        # sdk_output = ""
-        # for i in range(len(puz)):
-        #     if i % 9 == 0:
-        #         sdk_output += "\n"
-        #     if puz[i] == 0:
-        #         sdk_output += "."
-        #     else:
-        #         sdk_output += str(puz[i])
-        # print(sdk_output)
-    pdf = FPDF()
+        Path(f"/tmp/.{puz_data['difficulty']}.png").unlink(missing_ok=True)
+        generate_puzzle_image(puz_data, f"/tmp/.{puz_data['difficulty']}.png")
+
+    pdf = SudokuPDF(puzzle_date=puzzles[0]["print_date"])
     pdf.add_page()
     if len(puzzles) > 1:
-        pdf.image("output/Easy.png", w=pdf.epw / 2, y=10, keep_aspect_ratio=True)
+        pdf.image("/tmp/.Easy.png", w=pdf.epw / 2, y=40, keep_aspect_ratio=True)
         pdf.image(
-            "output/Medium.png", w=pdf.epw / 2, x=Align.R, y=60, keep_aspect_ratio=True
+            "/tmp/.Medium.png", w=pdf.epw / 2, x=Align.R, y=105, keep_aspect_ratio=True
         )
         pdf.image(
-            "output/Hard.png", w=pdf.epw / 2, x=Align.L, y=120, keep_aspect_ratio=True
+            "/tmp/.Hard.png", w=pdf.epw / 2, x=Align.L, y=170, keep_aspect_ratio=True
         )
-    pdf.output("output/sudoku.pdf")
+    else:
+        pdf.image(
+            f"/tmp/.{puzzles[0]['difficulty']}.png",
+            w=pdf.epw,
+            y=40,
+            keep_aspect_ratio=True,
+        )
+    pdf.output(f"out/{puzzles[0]['print_date']}.pdf")
 
 
 def write_pdf(data: bytes, path: os.PathLike) -> None:

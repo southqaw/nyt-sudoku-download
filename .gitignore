@@ -4,3 +4,5 @@ out/
 cookies.sqlite
 env/
 .env/
+*.pdf
+*.sqlite
