@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import datetime
 import json
 import logging
 import os
@@ -7,10 +8,9 @@ import re
 import subprocess
 import sys
 from datetime import timedelta
-import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TypedDict, Optional, Literal
+from typing import Literal, Optional, TypedDict
 
 import click
 import matplotlib.pyplot as plt
@@ -80,12 +80,19 @@ class SudokuPDF(FPDF):
 
     def header(self) -> None:
         self.set_font("helvetica", size=11)
-        self.cell(
-            self.epw / 3,
-            20,
-            f"{datetime.datetime.strptime(self.puzzle_date, '%Y-%m-%d').strftime('%A, %B %d, %Y')}",
-            align="L",
-        )
+        if self.puzzle_date:
+            self.cell(
+                self.epw / 3,
+                20,
+                f"{datetime.datetime.strptime(self.puzzle_date, '%Y-%m-%d').strftime('%A, %B %d, %Y')}",
+                align="L",
+            )
+        else:
+            self.cell(
+                self.epw / 3,
+                20,
+                align="L",
+            )
         self.set_font("Times", style="B", size=32)
         self.cell(self.epw / 3, 15, "NYT Sudoku", align="C")
         self.line(x1=self.l_margin, y1=25, x2=self.w - self.r_margin, y2=25)
@@ -120,7 +127,7 @@ def generate_puzzle_image(puzzle: Puzzle, out_path: str, solution: bool = False)
     _, ax = plt.subplots(figsize=(6, 6))
     #  f"{datetime.strptime(puzzle['print_date'], '%Y-%m-%d').strftime('%A, %B %d, %Y')}  --  {puzzle['difficulty']} --"
     plt.title(
-        f"--  {puzzle['difficulty']} Puzzle --",
+        f"====  {puzzle['difficulty']} Puzzle ====",
         fontsize=18,
         fontname="Noto Serif",
         y=-0.08,
@@ -161,7 +168,7 @@ def format_pdf(
     left_handed: bool,
     solution: bool,
     difficulty: Enum,
-) -> None:
+) -> SudokuPDF:
 
     # Variations of the puzzle (left-handed or large-print) are retrieved via
     # URL query string parameters. These do not apply to the solution PDF.
@@ -171,10 +178,11 @@ def format_pdf(
     else:
         puzzles = (scrape_data[difficulty.value],)
 
-    Path("./out").mkdir(parents=True, exist_ok=True)
     for puz_data in puzzles:
         Path(f"/tmp/.{puz_data['difficulty']}.png").unlink(missing_ok=True)
-        generate_puzzle_image(puz_data, f"/tmp/.{puz_data['difficulty']}.png")
+        generate_puzzle_image(
+            puz_data, f"/tmp/.{puz_data['difficulty']}.png", solution=solution
+        )
 
     pdf = SudokuPDF(puzzle_date=puzzles[0]["print_date"])
     pdf.add_page()
@@ -193,14 +201,17 @@ def format_pdf(
             y=40,
             keep_aspect_ratio=True,
         )
-    pdf.output(f"out/{puzzles[0]['print_date']}.pdf")
+    return pdf
 
 
-def write_pdf(data: bytes, path: os.PathLike) -> None:
-    LOGGER.debug("Writing to file [path=%s]: %s", path, data[:32])
-    with open(path, "wb") as pdf:
-        pdf.write(data)
-    print(f"Wrote {len(data)} bytes to {path}")
+def determine_date(puzzle_data: ScrapeData) -> str:
+    return puzzle_data["hard"]["print_date"]
+
+
+def write_pdf(data: SudokuPDF, path: os.PathLike) -> None:
+    LOGGER.debug("Writing to file [path=%s]", path)
+    data.output(path)
+    print(f"Wrote to {path}")
 
 
 def print_file(path: os.PathLike) -> None:
@@ -321,20 +332,19 @@ def main(
 
     session = requests_cache.CachedSession("sudoku", expire_after=timedelta(hours=1))
 
-    try:
-        data = scrape_puzzle(session, refresh)
-        files = format_pdf(data, large_print, left_handed, solution, difficulty)
-    except Exception as e:
-        print(f"Some sort of error: {e}", sys.stdout)
-    return
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
-    puzzle_filename = Path(out_dir, f"{determine_date(puzzle_date)}.pdf")
-    soln_filename = Path(out_dir, f"{determine_date(puzzle_date)}.soln.pdf")
-    write_pdf(files.puzzle, puzzle_filename)
-    if solution and files.solution:
-        write_pdf(files.solution, soln_filename)
+    data = scrape_puzzle(session, refresh)
+
+    puzzle_pdf = format_pdf(data, large_print, left_handed, False, difficulty)
+    solution_pdf = format_pdf(data, large_print, left_handed, True, difficulty)
+
+    puzzle_filename = Path(out_dir, f"{determine_date(data)}.pdf")
+    soln_filename = Path(out_dir, f"{determine_date(data)}.soln.pdf")
+    write_pdf(puzzle_pdf, puzzle_filename)
+    if solution and solution_pdf:
+        write_pdf(solution_pdf, soln_filename)
 
     if do_print:
         print(f"Sending {puzzle_filename} to default printer")
